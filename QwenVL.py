@@ -3,7 +3,7 @@ import torch
 import os
 import tempfile
 import io
-from transformers import AutoModelForVision2Seq, AutoProcessor, AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoModelForVision2Seq, AutoProcessor, AutoTokenizer
 from huggingface_hub import snapshot_download
 from modelscope.hub.snapshot_download import snapshot_download as modelscope_snapshot_download
 from PIL import Image
@@ -14,7 +14,7 @@ import numpy as np
 import requests
 import time
 import torchvision
-
+from transformers import BitsAndBytesConfig
 
 # 模型注册表 - 存储所有支持的模型版本信息
 MODEL_REGISTRY = {
@@ -32,7 +32,8 @@ MODEL_REGISTRY = {
             "model-00002-of-00002.safetensors",
         ],
         "test_file": "model-00002-of-00002.safetensors",
-        "default": True
+        "default": True,
+        "quantized": False,  # 标记是否为预量化模型
     },
     "Qwen2.5-VL-3B-Instruct-AWQ": {
         "repo_id": {
@@ -48,8 +49,426 @@ MODEL_REGISTRY = {
             "model.safetensors",
         ],
         "test_file": "model.safetensors",
-        "default": False
-    }
+        "default": False,
+        "quantized": True,  # 标记为预量化模型
+    },
+    "Qwen2.5-VL-7B-Instruct": {
+        "repo_id": {
+            "huggingface": "Qwen/Qwen2.5-VL-7B-Instruct",
+            "modelscope": "qwen/Qwen2.5-VL-7B-Instruct"
+        },
+        "required_files": [
+            "model-00001-of-00005.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json",
+            "model.safetensors.index.json"
+        ],
+        "test_file": "model-00001-of-00005.safetensors",
+        "default": False,
+        "quantized": False,  # 标记是否为预量化模型
+    },
+    "Qwen2.5-VL-7B-Instruct-AWQ": {
+        "repo_id": {
+            "huggingface": "Qwen/Qwen2.5-VL-7B-Instruct-AWQ",
+            "modelscope": "qwen/Qwen2.5-VL-7B-Instruct-AWQ"
+        },
+        "required_files": [
+            "model-00001-of-00002.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json",
+            "model.safetensors.index.json"
+        ],
+        "test_file": "model-00001-of-00002.safetensors",
+        "default": False,
+        "quantized": True,  # 标记为预量化模型
+    },
+    "Qwen2.5-VL-32B-Instruct": {
+        "repo_id": {
+            "huggingface": "Qwen/Qwen2.5-VL-32B-Instruct",
+            "modelscope": "qwen/Qwen2.5-VL-32B-Instruct"
+        },
+        "required_files": [
+            "model-00001-of-00018.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json",
+            "model.safetensors.index.json"
+        ],
+        "test_file": "model-00001-of-00018.safetensors",
+        "default": False,
+        "quantized": False,  # 标记是否为预量化模型
+    },
+    "Qwen2.5-VL-32B-Instruct-AWQ": {
+        "repo_id": {
+            "huggingface": "Qwen/Qwen2.5-VL-32B-Instruct-AWQ",
+            "modelscope": "qwen/Qwen2.5-VL-32B-Instruct-AWQ"
+        },
+        "required_files": [
+            "model-00001-of-00006.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json",
+            "model.safetensors.index.json"
+        ],
+        "test_file": "model-00001-of-00006.safetensors",
+        "default": False,
+        "quantized": True,  # 标记为预量化模型
+    },
+    "Qwen2.5-VL-72B-Instruct": {
+        "repo_id": {
+            "huggingface": "Qwen/Qwen2.5-VL-72B-Instruct",
+            "modelscope": "qwen/Qwen2.5-VL-72B-Instruct"
+        },
+        "required_files": [
+            "model-00001-of-00038.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json",
+            "model.safetensors.index.json"
+        ],
+        "test_file": "model-00001-of-00038.safetensors",
+        "default": False,
+        "quantized": False,  # 标记是否为预量化模型
+    },
+    "Qwen2.5-VL-72B-Instruct-AWQ": {
+        "repo_id": {
+            "huggingface": "Qwen/Qwen2.5-VL-72B-Instruct-AWQ",
+            "modelscope": "qwen/Qwen2.5-VL-72B-Instruct-AWQ"
+        },
+        "required_files": [
+            "model-00001-of-00011.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json",
+            "model.safetensors.index.json"
+        ],
+        "test_file": "model-00001-of-00011.safetensors",
+        "default": False,
+        "quantized": True,  # 标记为预量化模型
+    },
+    "Qwen2-VL-2B": {
+        "repo_id": {
+            "huggingface": "Qwen/Qwen2-VL-2B",
+            "modelscope": "qwen/Qwen2-VL-2B"
+        },
+        "required_files": [
+            "model-00001-of-00002.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json",
+            "model.safetensors.index.json"
+        ],
+        "test_file": "model-00001-of-00002.safetensors",
+        "default": False,
+        "quantized": False,  # 标记是否为预量化模型
+    },
+    "Qwen2-VL-2B-Instruct": {
+        "repo_id": {
+            "huggingface": "Qwen/Qwen2-VL-2B-Instruct",
+            "modelscope": "qwen/Qwen2-VL-2B-Instruct"
+        },
+        "required_files": [
+            "model-00001-of-00002.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json",
+            "model.safetensors.index.json"
+        ],
+        "test_file": "model-00001-of-00002.safetensors",
+        "default": False,
+        "quantized": False,  # 标记是否为预量化模型
+    },
+    "Qwen2-VL-7B-Instruct": {
+        "repo_id": {
+            "huggingface": "Qwen/Qwen2-VL-7B-Instruct",
+            "modelscope": "qwen/Qwen2-VL-7B-Instruct"
+        },
+        "required_files": [
+            "model-00001-of-00005.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json",
+            "model.safetensors.index.json"
+        ],
+        "test_file": "model-00001-of-00005.safetensors",
+        "default": False,
+        "quantized": False,  # 标记是否为预量化模型
+    },
+    "Qwen2-VL-72B-Instruct": {
+        "repo_id": {
+            "huggingface": "Qwen/Qwen2-VL-72B-Instruct",
+            "modelscope": "qwen/Qwen2-VL-72B-Instruct"
+        },
+        "required_files": [
+            "model-00001-of-00038.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json",
+            "model.safetensors.index.json"
+        ],
+        "test_file": "model-00001-of-00038.safetensors",
+        "default": False,
+        "quantized": False,  # 标记是否为预量化模型
+    },
+    "Qwen2-VL-2B-Instruct-AWQ": {
+        "repo_id": {
+            "huggingface": "Qwen/Qwen2-VL-2B-Instruct-AWQ",
+            "modelscope": "qwen/Qwen2-VL-2B-Instruct-AWQ"
+        },
+        "required_files": [
+            "model.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json"
+        ],
+        "test_file": "model.safetensors",
+        "default": False,
+        "quantized": True,  # 标记为预量化模型
+    },
+    "Qwen2-VL-2B-Instruct-GPTQ-Int4": {
+        "repo_id": {
+            "huggingface": "Qwen/Qwen2-VL-2B-Instruct-GPTQ-Int4",
+            "modelscope": "qwen/Qwen2-VL-2B-Instruct-GPTQ-Int4"
+        },
+        "required_files": [
+            "model.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json"
+        ],
+        "test_file": "model.safetensors",
+        "default": False,
+        "quantized": True,  # 标记为预量化模型
+    },
+    "Qwen2-VL-2B-Instruct-GPTQ-Int8": {
+        "repo_id": {
+            "huggingface": "Qwen/Qwen2-VL-2B-Instruct-GPTQ-Int8",
+            "modelscope": "qwen/Qwen2-VL-2B-Instruct-GPTQ-Int8"
+        },
+        "required_files": [
+            "model.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json"
+        ],
+        "test_file": "model.safetensors",
+        "default": False,
+        "quantized": True,  # 标记为预量化模型
+    },
+    "Qwen2-VL-7B-Instruct-AWQ": {
+        "repo_id": {
+            "huggingface": "Qwen/Qwen2-VL-7B-Instruct-AWQ",
+            "modelscope": "qwen/Qwen2-VL-7B-Instruct-AWQ"
+        },
+        "required_files": [
+            "model-00001-of-00002.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json",
+            "model.safetensors.index.json"
+        ],
+        "test_file": "model-00001-of-00002.safetensors",
+        "default": False,
+        "quantized": True,  # 标记为预量化模型
+    },
+    "Qwen2-VL-7B-Instruct-GPTQ-Int4": {
+        "repo_id": {
+            "huggingface": "Qwen/Qwen2-VL-7B-Instruct-GPTQ-Int4",
+            "modelscope": "qwen/Qwen2-VL-7B-Instruct-GPTQ-Int4"
+        },
+        "required_files": [
+            "model-00001-of-00002.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json",
+            "model.safetensors.index.json"
+        ],
+        "test_file": "model-00001-of-00002.safetensors",
+        "default": False,
+        "quantized": True,  # 标记为预量化模型
+    },
+    "Qwen2-VL-7B-Instruct-GPTQ-Int8": {
+        "repo_id": {
+            "huggingface": "Qwen/Qwen2-VL-7B-Instruct-GPTQ-Int8",
+            "modelscope": "qwen/Qwen2-VL-7B-Instruct-GPTQ-Int8"
+        },
+        "required_files": [
+            "model-00001-of-00003.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json",
+            "model.safetensors.index.json"
+        ],
+        "test_file": "model-00001-of-00003.safetensors",
+        "default": False,
+        "quantized": True,  # 标记为预量化模型
+    },
+    "Qwen2-VL-72B-Instruct-AWQ": {
+        "repo_id": {
+            "huggingface": "Qwen/Qwen2-VL-72B-Instruct-AWQ",
+            "modelscope": "qwen/Qwen2-VL-72B-Instruct-AWQ"
+        },
+        "required_files": [
+            "model-00001-of-00011.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json",
+            "model.safetensors.index.json"
+        ],
+        "test_file": "model-00001-of-00011.safetensors",
+        "default": False,
+        "quantized": True,  # 标记为预量化模型
+    },
+    "Qwen2-VL-72B-Instruct-GPTQ-Int4": {
+        "repo_id": {
+            "huggingface": "Qwen/Qwen2-VL-72B-Instruct-GPTQ-Int4",
+            "modelscope": "qwen/Qwen2-VL-72B-Instruct-GPTQ-Int4"
+        },
+        "required_files": [
+            "model-00001-of-00011.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json",
+            "model.safetensors.index.json"
+        ],
+        "test_file": "model-00001-of-00011.safetensors",
+        "default": False,
+        "quantized": True,  # 标记为预量化模型
+    },
+    "Qwen2-VL-72B-Instruct-GPTQ-Int8": {
+        "repo_id": {
+            "huggingface": "Qwen/Qwen2-VL-72B-Instruct-GPTQ-Int8",
+            "modelscope": "qwen/Qwen2-VL-72B-Instruct-GPTQ-Int8"
+        },
+        "required_files": [
+            "model-00001-of-00021.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json",
+            "model.safetensors.index.json"
+        ],
+        "test_file": "model-00001-of-00021.safetensors",
+        "default": False,
+        "quantized": True,  # 标记为预量化模型
+    },
+    "Qwen2.5-VL-7B-Instruct-abliterated": {
+        "repo_id": {
+            "huggingface": "huihui-ai/Qwen2.5-VL-7B-Instruct-abliterated",
+            "modelscope": "huihui-ai/Qwen2.5-VL-7B-Instruct-abliterated"
+        },
+        "required_files": [
+            "model-00001-of-00004.safetensors",
+            "config.json",
+            "tokenizer.json",
+            "vocab.json",
+            "merges.txt",
+            "chat_template.json",
+            "preprocessor_config.json",
+            "generation_config.json",
+            "tokenizer_config.json",
+            "model.safetensors.index.json"
+        ],
+        "test_file": "model-00001-of-00004.safetensors",
+        "default": False,
+        "quantized": False,  # 标记是否为预量化模型
+    }    
 }
 
 
@@ -69,7 +488,7 @@ FLASH_ATTENTION_AVAILABLE = check_flash_attention()
 def init_qwen_paths(model_name):
     """初始化模型路径，支持动态生成不同模型版本的路径"""
     base_dir = Path(folder_paths.models_dir).resolve()
-    qwen_dir = base_dir / "Qwen" / "VLM"  # 添加VLM子目录
+    qwen_dir = base_dir / "Qwen" / "Qwen-VL"  # 添加VLM子目录
     model_dir = qwen_dir / model_name  # 使用模型名称作为子目录
     
     # 创建目录
@@ -241,25 +660,17 @@ class QwenVisionParser:
         if not torch.cuda.is_available():
             raise RuntimeError(f"CUDA is required for  {model_name} model")
 
+        # 统一使用 BitsAndBytesConfig 配置量化参数
         quant_config = None
-        # 根据模型类型选择量化配置方式
-        if "-AWQ" in model_name:
-            # 处理 AWQ 模型（直接传递量化参数）
-            quant_args = {}
-            if quantization == "👍 4-bit (VRAM-friendly)":
-                quant_args.update({
-                    "load_in_4bit": True,
-                    "bnb_4bit_compute_dtype": torch.float16,
-                    "bnb_4bit_quant_type": "nf4",
-                    "bnb_4bit_use_double_quant": True,
-                })
-            elif quantization == "⚖️ 8-bit (Balanced Precision)":
-                quant_args.update({
-                    "load_in_8bit": True,
-                })
+        # 检查模型是否已经量化
+        is_quantized_model = MODEL_REGISTRY.get(model_name, {}).get("quantized", False)
+        
+        if is_quantized_model:
+            print(f"模型 {model_name} 已经是量化模型，将忽略用户的量化设置")
+            # 对于已经量化的模型，使用原始精度加载
+            load_dtype = torch.float16
         else:
-            # 处理非 AWQ 模型（保持原有 BitsAndBytesConfig 逻辑）
-            quant_config = None
+            # 对于非量化模型，应用用户选择的量化设置
             if quantization == "👍 4-bit (VRAM-friendly)":
                 quant_config = BitsAndBytesConfig(
                     load_in_4bit=True,
@@ -267,11 +678,15 @@ class QwenVisionParser:
                     bnb_4bit_quant_type="nf4",
                     bnb_4bit_use_double_quant=True,
                 )
+                load_dtype = None  # 让量化配置决定数据类型
             elif quantization == "⚖️ 8-bit (Balanced Precision)":
                 quant_config = BitsAndBytesConfig(
                     load_in_8bit=True,
                 )
-            quant_args = {"quantization_config": quant_config}
+                load_dtype = None  # 让量化配置决定数据类型
+            else:
+                # 不使用量化，使用原始精度
+                load_dtype = torch.float16
 
         # 自定义device_map，这里假设只有一个GPU，将模型尽可能放到GPU上
         device_map = {"": 0} if torch.cuda.device_count() > 0 else "auto"
@@ -281,12 +696,12 @@ class QwenVisionParser:
             print(f"检测到模型文件缺失，正在为你下载 {model_name} 模型，请稍候...")
             print(f"下载将保存在: {self.model_path}")
             
-            # 开始下载逻辑
+            # 开始下载逻辑（保持不变）
             try:
                 # 从注册表获取模型信息
                 model_info = MODEL_REGISTRY[model_name]
                 
-                # 测试下载速度
+                # 测试下载速度（保持不变）
                 huggingface_test_url = f"https://huggingface.co/{model_info['repo_id']['huggingface']}/resolve/main/{model_info['test_file']}"
                 modelscope_test_url = f"https://modelscope.cn/api/v1/models/{model_info['repo_id']['modelscope']}/repo?Revision=master&FilePath={model_info['test_file']}"
                 huggingface_speed = test_download_speed(huggingface_test_url)
@@ -295,7 +710,7 @@ class QwenVisionParser:
                 print(f"Hugging Face下载速度: {huggingface_speed:.2f} KB/s")
                 print(f"ModelScope下载速度: {modelscope_speed:.2f} KB/s")
 
-                # 根据下载速度选择优先下载源
+                # 根据下载速度选择优先下载源（保持不变）
                 if huggingface_speed > modelscope_speed * 1.5:
                     download_sources = [
                         (snapshot_download, model_info['repo_id']['huggingface'], "Hugging Face"),
@@ -335,7 +750,7 @@ class QwenVisionParser:
 
                             used_cache_path = cached_path  # 记录使用的缓存路径
                             
-                            # 将下载的模型复制到模型目录
+                            # 将下载的模型复制到模型目录（保持不变）
                             self.copy_cached_model_to_local(cached_path, self.model_path)
                             
                             print(f"成功从 {source} 下载模型到 {self.model_path}")
@@ -353,7 +768,7 @@ class QwenVisionParser:
                 else:
                     raise RuntimeError("从所有源下载模型均失败。")
                 
-                # 下载完成后再次验证
+                # 下载完成后再次验证（保持不变）
                 if not validate_model_path(self.model_path, self.current_model_name):
                     raise RuntimeError(f"下载后模型文件仍不完整: {self.model_path}")
                 
@@ -362,7 +777,7 @@ class QwenVisionParser:
             except Exception as e:
                 print(f"下载模型时发生错误: {e}")
                 
-                # 下载失败提示
+                # 下载失败提示（保持不变）
                 if used_cache_path:
                     print("\n⚠️ 注意：下载过程中创建了缓存文件")
                     print(f"缓存路径: {used_cache_path}")
@@ -372,29 +787,36 @@ class QwenVisionParser:
 
         # 模型文件完整，正常加载
         print(f"加载模型: {self.model_path}，量化: {quantization}")
+
+        # 根据量化选项决定是否传递quantization_config
+        load_kwargs = {
+            "device_map": device_map,
+            "torch_dtype": torch.float16,
+            "attn_implementation": "flash_attention_2" if FLASH_ATTENTION_AVAILABLE else "sdpa",
+            "low_cpu_mem_usage": True,
+            "use_safetensors": True,
+        }
+
+        if quant_config is not None:
+            load_kwargs["quantization_config"] = quant_config
+
         self.model = AutoModelForVision2Seq.from_pretrained(
             self.model_path,
-            device_map=device_map,
-            torch_dtype=torch.float16,
-            attn_implementation="flash_attention_2" if FLASH_ATTENTION_AVAILABLE else "sdpa",
-            low_cpu_mem_usage=True,
-            use_safetensors=True,
-            offload_state_dict=True,
-            **quant_args,  # 统一传递量化参数
+            **load_kwargs
         ).eval()
 
-        # 编译优化（PyTorch 2.2+）
+        # 编译优化（保持不变）
         if torch.__version__ >= "2.2":
             self.model = torch.compile(self.model, mode="reduce-overhead")
 
-        # SDP优化
+        # SDP优化（保持不变）
         torch.backends.cuda.enable_flash_sdp(True)
         torch.backends.cuda.enable_mem_efficient_sdp(True)
 
         self.processor = AutoProcessor.from_pretrained(self.model_path, trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
 
-        # 修复rope_scaling配置警告
+        # 修复rope_scaling配置警告（保持不变）
         if hasattr(self.model.config, "rope_scaling"):
             self.model.config.rope_scaling["mrope_section"] = "none"  # 禁用 MROPE 优化
 
@@ -484,7 +906,22 @@ class QwenVisionParser:
         start_time = time.time()
         
         # 确保加载正确的模型和量化配置
-        self.load_model(model_name, quantization)
+        # 检查模型是否已加载且是否需要重新加载（即使名称相同）
+        if (self.model is not None and 
+            self.current_model_name == model_name and 
+            self.current_quantization == quantization):
+            # 额外检查：如果模型是预量化的，但用户选择了量化选项，仍需重新加载
+            is_quantized_model = MODEL_REGISTRY.get(model_name, {}).get("quantized", False)
+            user_selected_quantization = quantization in ["👍 4-bit (VRAM-friendly)", "⚖️ 8-bit (Balanced Precision)"]
+            
+            if is_quantized_model and user_selected_quantization:
+                print(f"模型 {model_name} 已经是量化模型，将忽略用户的量化设置并重新加载")
+                self.clear_model_resources()
+                self.load_model(model_name, "🚫 None (Original Precision)")
+            else:
+                print(f"使用已加载的模型: {model_name}，量化: {quantization}")
+        else:
+            self.load_model(model_name, quantization)
         
         # 图像预处理
         pil_image = None
@@ -543,7 +980,6 @@ class QwenVisionParser:
         del video_frames, images, videos
         torch.cuda.empty_cache()
         
-        # 后续代码保持不变...
         
         # 在函数开始处初始化model_inputs为None
         model_inputs = None
@@ -740,5 +1176,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "QwenVisionParser": "Qwen-TextGraph-VisionParser🐼"
+    "QwenVisionParser": "Qwen VL 🐼"
 }
