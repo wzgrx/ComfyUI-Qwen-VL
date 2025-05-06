@@ -1,7 +1,7 @@
 accelerate>=1.0
 bitsandbytes
 huggingface-hub>=0.26.2
-numpy
+numpy>=1.21.2
 pillow>=9.4.0
 qwen-vl-utils
 torch>=2.0.1
@@ -9,3 +9,4 @@ torchvision>=0.15.2
 transformers>=4.46
 modelscope
 Requests
+opencv-python>=4.11.0.86

@@ -2,7 +2,8 @@ from __future__ import annotations
 import torch
 import os
 import tempfile
-import io
+# import io
+import json
 from transformers import AutoModelForVision2Seq, AutoProcessor, AutoTokenizer
 from huggingface_hub import snapshot_download
 from modelscope.hub.snapshot_download import snapshot_download as modelscope_snapshot_download
@@ -13,464 +14,186 @@ from qwen_vl_utils import process_vision_info
 import numpy as np
 import requests
 import time
-import torchvision
+import torchvision.io
 from transformers import BitsAndBytesConfig
+# 尝试导入opencv作为备选视频处理库
+try:
+    import cv2
+    OPENCV_AVAILABLE = True
+except ImportError:
+    OPENCV_AVAILABLE = False
+    print("警告: OpenCV不可用，视频处理功能可能受限")
 
-# 模型注册表 - 存储所有支持的模型版本信息
-MODEL_REGISTRY = {
-    "Qwen2.5-VL-3B-Instruct": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2.5-VL-3B-Instruct",
-            "modelscope": "qwen/Qwen2.5-VL-3B-Instruct"
-        },
-        "required_files": [
-            "chat_template.json", "merges.txt","model.safetensors.index.json",
-            "preprocessor_config.json", "tokenizer.json", "vocab.json",
-            "config.json","generation_config.json","tokenizer_config.json",
-            # 3B模型分片为2个
-            "model-00001-of-00002.safetensors",
-            "model-00002-of-00002.safetensors",
-        ],
-        "test_file": "model-00002-of-00002.safetensors",
-        "default": True,
-        "quantized": False,  # 标记是否为预量化模型
-    },
-    "Qwen2.5-VL-3B-Instruct-AWQ": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2.5-VL-3B-Instruct-AWQ",
-            "modelscope": "qwen/Qwen2.5-VL-3B-Instruct-AWQ"
-        },
-        "required_files": [
-            "added_tokens.json", "chat_template.json", "merges.txt",
-            "preprocessor_config.json", "tokenizer_config.json",
-            "tokenizer.json", "vocab.json", "config.json",
-            "generation_config.json", "special_tokens_map.json",
-            # 3B模型有1个分片
-            "model.safetensors",
-        ],
-        "test_file": "model.safetensors",
-        "default": False,
-        "quantized": True,  # 标记为预量化模型
-    },
-    "Qwen2.5-VL-7B-Instruct": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2.5-VL-7B-Instruct",
-            "modelscope": "qwen/Qwen2.5-VL-7B-Instruct"
-        },
-        "required_files": [
-            "model-00001-of-00005.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json",
-            "model.safetensors.index.json"
-        ],
-        "test_file": "model-00001-of-00005.safetensors",
-        "default": False,
-        "quantized": False,  # 标记是否为预量化模型
-    },
-    "Qwen2.5-VL-7B-Instruct-AWQ": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2.5-VL-7B-Instruct-AWQ",
-            "modelscope": "qwen/Qwen2.5-VL-7B-Instruct-AWQ"
-        },
-        "required_files": [
-            "model-00001-of-00002.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json",
-            "model.safetensors.index.json"
-        ],
-        "test_file": "model-00001-of-00002.safetensors",
-        "default": False,
-        "quantized": True,  # 标记为预量化模型
-    },
-    "Qwen2.5-VL-32B-Instruct": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2.5-VL-32B-Instruct",
-            "modelscope": "qwen/Qwen2.5-VL-32B-Instruct"
-        },
-        "required_files": [
-            "model-00001-of-00018.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json",
-            "model.safetensors.index.json"
-        ],
-        "test_file": "model-00001-of-00018.safetensors",
-        "default": False,
-        "quantized": False,  # 标记是否为预量化模型
-    },
-    "Qwen2.5-VL-32B-Instruct-AWQ": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2.5-VL-32B-Instruct-AWQ",
-            "modelscope": "qwen/Qwen2.5-VL-32B-Instruct-AWQ"
-        },
-        "required_files": [
-            "model-00001-of-00006.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json",
-            "model.safetensors.index.json"
-        ],
-        "test_file": "model-00001-of-00006.safetensors",
-        "default": False,
-        "quantized": True,  # 标记为预量化模型
-    },
-    "Qwen2.5-VL-72B-Instruct": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2.5-VL-72B-Instruct",
-            "modelscope": "qwen/Qwen2.5-VL-72B-Instruct"
-        },
-        "required_files": [
-            "model-00001-of-00038.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json",
-            "model.safetensors.index.json"
-        ],
-        "test_file": "model-00001-of-00038.safetensors",
-        "default": False,
-        "quantized": False,  # 标记是否为预量化模型
-    },
-    "Qwen2.5-VL-72B-Instruct-AWQ": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2.5-VL-72B-Instruct-AWQ",
-            "modelscope": "qwen/Qwen2.5-VL-72B-Instruct-AWQ"
-        },
-        "required_files": [
-            "model-00001-of-00011.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json",
-            "model.safetensors.index.json"
-        ],
-        "test_file": "model-00001-of-00011.safetensors",
-        "default": False,
-        "quantized": True,  # 标记为预量化模型
-    },
-    "Qwen2-VL-2B": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2-VL-2B",
-            "modelscope": "qwen/Qwen2-VL-2B"
-        },
-        "required_files": [
-            "model-00001-of-00002.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json",
-            "model.safetensors.index.json"
-        ],
-        "test_file": "model-00001-of-00002.safetensors",
-        "default": False,
-        "quantized": False,  # 标记是否为预量化模型
-    },
-    "Qwen2-VL-2B-Instruct": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2-VL-2B-Instruct",
-            "modelscope": "qwen/Qwen2-VL-2B-Instruct"
-        },
-        "required_files": [
-            "model-00001-of-00002.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json",
-            "model.safetensors.index.json"
-        ],
-        "test_file": "model-00001-of-00002.safetensors",
-        "default": False,
-        "quantized": False,  # 标记是否为预量化模型
-    },
-    "Qwen2-VL-7B-Instruct": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2-VL-7B-Instruct",
-            "modelscope": "qwen/Qwen2-VL-7B-Instruct"
-        },
-        "required_files": [
-            "model-00001-of-00005.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json",
-            "model.safetensors.index.json"
-        ],
-        "test_file": "model-00001-of-00005.safetensors",
-        "default": False,
-        "quantized": False,  # 标记是否为预量化模型
-    },
-    "Qwen2-VL-72B-Instruct": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2-VL-72B-Instruct",
-            "modelscope": "qwen/Qwen2-VL-72B-Instruct"
-        },
-        "required_files": [
-            "model-00001-of-00038.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json",
-            "model.safetensors.index.json"
-        ],
-        "test_file": "model-00001-of-00038.safetensors",
-        "default": False,
-        "quantized": False,  # 标记是否为预量化模型
-    },
-    "Qwen2-VL-2B-Instruct-AWQ": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2-VL-2B-Instruct-AWQ",
-            "modelscope": "qwen/Qwen2-VL-2B-Instruct-AWQ"
-        },
-        "required_files": [
-            "model.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json"
-        ],
-        "test_file": "model.safetensors",
-        "default": False,
-        "quantized": True,  # 标记为预量化模型
-    },
-    "Qwen2-VL-2B-Instruct-GPTQ-Int4": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2-VL-2B-Instruct-GPTQ-Int4",
-            "modelscope": "qwen/Qwen2-VL-2B-Instruct-GPTQ-Int4"
-        },
-        "required_files": [
-            "model.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json"
-        ],
-        "test_file": "model.safetensors",
-        "default": False,
-        "quantized": True,  # 标记为预量化模型
-    },
-    "Qwen2-VL-2B-Instruct-GPTQ-Int8": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2-VL-2B-Instruct-GPTQ-Int8",
-            "modelscope": "qwen/Qwen2-VL-2B-Instruct-GPTQ-Int8"
-        },
-        "required_files": [
-            "model.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json"
-        ],
-        "test_file": "model.safetensors",
-        "default": False,
-        "quantized": True,  # 标记为预量化模型
-    },
-    "Qwen2-VL-7B-Instruct-AWQ": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2-VL-7B-Instruct-AWQ",
-            "modelscope": "qwen/Qwen2-VL-7B-Instruct-AWQ"
-        },
-        "required_files": [
-            "model-00001-of-00002.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json",
-            "model.safetensors.index.json"
-        ],
-        "test_file": "model-00001-of-00002.safetensors",
-        "default": False,
-        "quantized": True,  # 标记为预量化模型
-    },
-    "Qwen2-VL-7B-Instruct-GPTQ-Int4": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2-VL-7B-Instruct-GPTQ-Int4",
-            "modelscope": "qwen/Qwen2-VL-7B-Instruct-GPTQ-Int4"
-        },
-        "required_files": [
-            "model-00001-of-00002.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json",
-            "model.safetensors.index.json"
-        ],
-        "test_file": "model-00001-of-00002.safetensors",
-        "default": False,
-        "quantized": True,  # 标记为预量化模型
-    },
-    "Qwen2-VL-7B-Instruct-GPTQ-Int8": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2-VL-7B-Instruct-GPTQ-Int8",
-            "modelscope": "qwen/Qwen2-VL-7B-Instruct-GPTQ-Int8"
-        },
-        "required_files": [
-            "model-00001-of-00003.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json",
-            "model.safetensors.index.json"
-        ],
-        "test_file": "model-00001-of-00003.safetensors",
-        "default": False,
-        "quantized": True,  # 标记为预量化模型
-    },
-    "Qwen2-VL-72B-Instruct-AWQ": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2-VL-72B-Instruct-AWQ",
-            "modelscope": "qwen/Qwen2-VL-72B-Instruct-AWQ"
-        },
-        "required_files": [
-            "model-00001-of-00011.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json",
-            "model.safetensors.index.json"
-        ],
-        "test_file": "model-00001-of-00011.safetensors",
-        "default": False,
-        "quantized": True,  # 标记为预量化模型
-    },
-    "Qwen2-VL-72B-Instruct-GPTQ-Int4": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2-VL-72B-Instruct-GPTQ-Int4",
-            "modelscope": "qwen/Qwen2-VL-72B-Instruct-GPTQ-Int4"
-        },
-        "required_files": [
-            "model-00001-of-00011.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json",
-            "model.safetensors.index.json"
-        ],
-        "test_file": "model-00001-of-00011.safetensors",
-        "default": False,
-        "quantized": True,  # 标记为预量化模型
-    },
-    "Qwen2-VL-72B-Instruct-GPTQ-Int8": {
-        "repo_id": {
-            "huggingface": "Qwen/Qwen2-VL-72B-Instruct-GPTQ-Int8",
-            "modelscope": "qwen/Qwen2-VL-72B-Instruct-GPTQ-Int8"
-        },
-        "required_files": [
-            "model-00001-of-00021.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json",
-            "model.safetensors.index.json"
-        ],
-        "test_file": "model-00001-of-00021.safetensors",
-        "default": False,
-        "quantized": True,  # 标记为预量化模型
-    },
-    "Qwen2.5-VL-7B-Instruct-abliterated": {
-        "repo_id": {
-            "huggingface": "huihui-ai/Qwen2.5-VL-7B-Instruct-abliterated",
-            "modelscope": "huihui-ai/Qwen2.5-VL-7B-Instruct-abliterated"
-        },
-        "required_files": [
-            "model-00001-of-00004.safetensors",
-            "config.json",
-            "tokenizer.json",
-            "vocab.json",
-            "merges.txt",
-            "chat_template.json",
-            "preprocessor_config.json",
-            "generation_config.json",
-            "tokenizer_config.json",
-            "model.safetensors.index.json"
-        ],
-        "test_file": "model-00001-of-00004.safetensors",
-        "default": False,
-        "quantized": False,  # 标记是否为预量化模型
-    }    
-}
 
+
+
+# 模型注册表JSON文件路径
+MODEL_REGISTRY_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_registry.json")
+
+def load_model_registry():
+    """从JSON文件加载模型注册表"""
+    try:
+        with open(MODEL_REGISTRY_JSON, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"错误: 模型注册表文件 {MODEL_REGISTRY_JSON} 不存在")
+        return {}
+    except json.JSONDecodeError as e:
+        print(f"错误: 解析模型注册表JSON文件时出错: {e}")
+        return {}
+
+# 加载模型注册表
+MODEL_REGISTRY = load_model_registry()
+
+def get_gpu_info():
+    """获取GPU信息，包括显存使用情况"""
+    try:
+        if torch.cuda.is_available():
+            gpu_count = torch.cuda.device_count()
+            device = torch.cuda.current_device()
+            props = torch.cuda.get_device_properties(device)
+            total_memory = props.total_memory / 1024**3  # GB
+            allocated_memory = torch.cuda.memory_allocated(device) / 1024**3  # GB
+            free_memory = total_memory - allocated_memory
+            
+            return {
+                "available": True,
+                "count": gpu_count,
+                "name": props.name,
+                "total_memory": total_memory,
+                "allocated_memory": allocated_memory,
+                "free_memory": free_memory
+            }
+        else:
+            return {
+                "available": False,
+                "count": 0,
+                "name": "None",
+                "total_memory": 0,
+                "allocated_memory": 0,
+                "free_memory": 0
+            }
+    except Exception as e:
+        print(f"获取GPU信息时出错: {e}")
+        return {
+            "available": False,
+            "count": 0,
+            "name": "None",
+            "total_memory": 0,
+            "allocated_memory": 0,
+            "free_memory": 0
+        }
+
+def get_system_memory_info():
+    """获取系统内存信息，包括总内存和可用内存"""
+    try:
+        import psutil
+        mem = psutil.virtual_memory()
+        return {
+            "total": mem.total / 1024**3,  # GB
+            "available": mem.available / 1024**3,  # GB
+            "used": mem.used / 1024**3,  # GB
+            "percent": mem.percent
+        }
+    except ImportError:
+        print("警告: 无法导入psutil库，系统内存检测功能将不可用")
+        return {
+            "total": 0,
+            "available": 0,
+            "used": 0,
+            "percent": 0
+        }
+
+def get_device_info():
+    """获取设备信息，包括GPU和CPU，并分析最佳运行设备"""
+    device_info = {
+        "device_type": "unknown",
+        "gpu": get_gpu_info(),
+        "system_memory": get_system_memory_info(),
+        "recommended_device": "cpu",  # 默认推荐CPU
+        "memory_sufficient": True,
+        "warning_message": None
+    }
+    
+    # 检查是否为Apple Silicon
+    try:
+        import platform
+        if platform.system() == "Darwin" and platform.processor() == "arm":
+            device_info["device_type"] = "apple_silicon"
+            # M1/M2芯片有统一内存，检查总内存是否充足
+            if device_info["system_memory"]["total"] >= 16:  # 至少16GB内存
+                device_info["recommended_device"] = "mps"
+            else:
+                device_info["memory_sufficient"] = False
+                device_info["warning_message"] = "Apple Silicon芯片内存不足，建议使用至少16GB内存的设备"
+            return device_info
+    except:
+        pass
+    
+    # 检查是否有NVIDIA GPU
+    if device_info["gpu"]["available"]:
+        device_info["device_type"] = "nvidia_gpu"
+        # 检查GPU内存是否充足
+        if device_info["gpu"]["total_memory"] >= 8:  # 至少8GB显存
+            device_info["recommended_device"] = "cuda"
+        else:
+            # 显存不足，但仍可使用，只是性能会受影响
+            device_info["memory_sufficient"] = False
+            device_info["warning_message"] = "NVIDIA GPU显存不足，可能会使用系统内存，性能会下降"
+            device_info["recommended_device"] = "cuda"  # 仍推荐使用GPU，但会启用内存优化
+        return device_info
+    
+    # 检查是否有AMD GPU (ROCm)
+    try:
+        import torch
+        if hasattr(torch, 'device') and torch.device('cuda' if torch.cuda.is_available() else 'cpu').type == 'cuda':
+            device_info["device_type"] = "amd_gpu"
+            # AMD GPU内存检查
+            if device_info["gpu"]["total_memory"] >= 8:
+                device_info["recommended_device"] = "cuda"
+            else:
+                device_info["memory_sufficient"] = False
+                device_info["warning_message"] = "AMD GPU显存不足，可能会使用系统内存，性能会下降"
+                device_info["recommended_device"] = "cuda"
+            return device_info
+    except:
+        pass
+    
+    # 默认为CPU
+    device_info["device_type"] = "cpu"
+    # 检查系统内存是否充足
+    if device_info["system_memory"]["total"] < 8:
+        device_info["memory_sufficient"] = False
+        device_info["warning_message"] = "系统内存不足，模型运行可能会非常缓慢"
+    
+    return device_info
+
+def calculate_required_memory(model_name, quantization, use_cpu=False, use_mps=False):
+    """根据模型名称、量化方式和设备类型计算所需内存"""
+    model_info = MODEL_REGISTRY.get(model_name, {})
+    vram_config = model_info.get("vram_requirement", {})
+    
+    # 检查模型是否已经量化
+    is_quantized_model = model_info.get("quantized", False)
+    
+    # 基础内存需求计算
+    if is_quantized_model:
+        base_memory = vram_config.get("full", 0)
+    else:
+        if quantization == "👍 4-bit (VRAM-friendly)":
+            base_memory = vram_config.get("4bit", 0)
+        elif quantization == "⚖️ 8-bit (Balanced Precision)":
+            base_memory = vram_config.get("8bit", 0)
+        else:
+            base_memory = vram_config.get("full", 0)
+    
+    # 调整内存需求（CPU和MPS通常需要更多内存）
+    if use_cpu or use_mps:
+        # CPU和MPS通常需要更多内存用于内存交换
+        memory_factor = 1.5 if use_cpu else 1.2
+        return base_memory * memory_factor
+    
+    return base_memory
 
 def check_flash_attention():
     """检测Flash Attention 2支持（需Ampere架构及以上）"""
@@ -563,17 +286,29 @@ def check_model_files_exist(model_dir, model_name):
 # 视频处理工具类
 class VideoProcessor:
     def __init__(self):
-        # 尝试导入torchcodec作为备选视频处理库
+        # 尝试导入torchcodec作为首选视频处理库
         self.use_torchcodec = False
+        self.use_opencv = False
+        
         try:
             import torchcodec
-            self.use_torchcodec = True
-            print("使用torchcodec进行视频处理")
+            # 检查VideoDecoder属性是否存在
+            if hasattr(torchcodec, 'VideoDecoder'):
+                self.use_torchcodec = True
+                print("使用torchcodec进行视频处理")
+            else:
+                print("torchcodec库中没有VideoDecoder属性")
+                raise ImportError
         except ImportError:
-            print("torchcodec不可用，使用torchvision进行视频处理（有弃用警告）")
-            # 抑制torchvision视频API弃用警告
-            import warnings
-            warnings.filterwarnings("ignore", category=UserWarning, module="torchvision.io")
+            print("torchcodec不可用")
+            if OPENCV_AVAILABLE:
+                self.use_opencv = True
+                print("使用OpenCV作为备选视频处理库")
+            else:
+                print("警告: 没有找到可用的视频处理库，将尝试使用torchvision（可能有弃用警告）")
+                # 抑制torchvision视频API弃用警告
+                import warnings
+                warnings.filterwarnings("ignore", category=UserWarning, module="torchvision.io")
     
     def read_video(self, video_path):
         """读取视频文件并返回帧数据"""
@@ -589,11 +324,37 @@ class VideoProcessor:
                 fps = decoder.get_fps()
                 total_frames = len(frames)
                 frames = torch.stack(frames) if frames else torch.zeros(0)
+                print(f"使用torchcodec成功处理视频: {video_path}")
+            elif self.use_opencv:
+                # 使用OpenCV读取视频
+                cap = cv2.VideoCapture(video_path)
+                if not cap.isOpened():
+                    raise ValueError(f"无法打开视频文件: {video_path}")
+                
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                frames = []
+                
+                while True:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    # 转换为RGB并转为PyTorch张量
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    frame = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
+                    frames.append(frame)
+                
+                # 修正：使用release()方法释放资源
+                cap.release()
+                frames = torch.stack(frames) if frames else torch.zeros(0)
+                print(f"使用OpenCV成功处理视频: {video_path}")
             else:
                 # 使用torchvision读取视频（弃用API）
                 frames, _, info = torchvision.io.read_video(video_path, pts_unit="sec")
                 fps = info["video_fps"]
                 total_frames = frames.shape[0]
+                frames = frames.permute(0, 3, 1, 2).float() / 255.0  # 转换为[B, C, H, W]格式
+                print(f"使用torchvision成功处理视频: {video_path}")
             
             process_time = time.time() - start_time
             print(f"视频处理完成: {video_path}, 总帧数: {total_frames}, FPS: {fps:.2f}, 处理时间: {process_time:.3f}s")
@@ -602,7 +363,6 @@ class VideoProcessor:
         except Exception as e:
             print(f"视频处理错误: {e}")
             return None, None, None
-
 
 class QwenVisionParser:
     def __init__(self):
@@ -629,6 +389,19 @@ class QwenVisionParser:
         self.video_processor = VideoProcessor()  # 初始化视频处理器
         self.last_generated_text = ""  # 保存上次生成的文本，用于调试
         self.generation_stats = {"count": 0, "total_time": 0}  # 统计生成性能
+        
+        # 初始化设备信息
+        self.device_info = get_device_info()
+        self.default_device = self.device_info["recommended_device"]
+        
+        print(f"检测到的设备: {self.device_info['device_type']}")
+        print(f"自动选择的运行设备: {self.default_device}")
+        
+        if not self.device_info["memory_sufficient"]:
+            print(f"警告: {self.device_info['warning_message']}")
+        
+        # 初始化内存优化选项
+        self.optimize_for_low_memory = not self.device_info["memory_sufficient"]
 
     def clear_model_resources(self):
         """释放当前模型占用的资源"""
@@ -639,8 +412,69 @@ class QwenVisionParser:
             self.processor = None
             self.tokenizer = None
             torch.cuda.empty_cache()  # 清理GPU缓存
+
+        # 更新设备信息（可选，因为初始化时已设置）
+        # self.device_info = get_device_info()
+        # self.default_device = self.device_info["recommended_device"]
+        
+        # 初始化内存优化选项
+        self.optimize_for_low_memory = not self.device_info["memory_sufficient"]
+
+
+    def check_memory_requirements(self, model_name, quantization):
+        """检查当前设备内存是否满足模型要求，必要时调整量化级别"""
+        # 使用自动选择的设备
+        device = self.default_device
+        use_cpu = device == "cpu"
+        use_mps = device == "mps"
+        
+        # 计算所需内存
+        required_memory = calculate_required_memory(model_name, quantization, use_cpu, use_mps)
+        
+        if use_cpu or use_mps:
+            # 检查系统内存
+            available_memory = self.device_info["system_memory"]["available"]
+            memory_type = "系统内存"
+        else:
+            # 检查GPU内存
+            available_memory = self.device_info["gpu"]["free_memory"]
+            memory_type = "GPU显存"
+        
+        # 添加20%的安全余量
+        safety_margin = 1.2
+        required_memory_with_margin = required_memory * safety_margin
+        
+        print(f"模型 {model_name} (量化: {quantization}) 需要 {required_memory:.2f} GB {memory_type}")
+        print(f"考虑安全余量后，需要 {required_memory_with_margin:.2f} GB {memory_type}")
+        print(f"当前可用 {memory_type}: {available_memory:.2f} GB")
+        
+        # 如果内存不足，自动调整量化级别
+        if required_memory_with_margin > available_memory:
+            print(f"警告: 所选量化级别需要的{memory_type}超过可用内存，自动调整量化级别")
+            
+            # 降级策略
+            if quantization == "🚫 None (Original Precision)":
+                print("将量化级别从'无量化'调整为'8-bit'")
+                return "⚖️ 8-bit (Balanced Precision)"
+            elif quantization == "⚖️ 8-bit (Balanced Precision)":
+                print("将量化级别从'8-bit'调整为'4-bit'")
+                return "👍 4-bit (VRAM-friendly)"
+            else:
+                # 已经是4-bit，无法再降级
+                print(f"错误: 即使使用4-bit量化，模型仍然需要更多{memory_type}")
+                raise RuntimeError(f"错误: 可用{memory_type}不足，需要至少 {required_memory_with_margin:.2f} GB，但只有 {available_memory:.2f} GB")
+        
+        return quantization
+
     
     def load_model(self, model_name, quantization):
+        # 检查内存需求并可能调整量化级别
+        adjusted_quantization = self.check_memory_requirements(model_name, quantization)
+        
+        # 使用自动选择的设备
+        device = self.default_device
+        print(f"使用设备: {device}")
+
         # 检查是否需要重新加载模型
         if (self.model is not None and 
             self.current_model_name == model_name and 
@@ -655,53 +489,18 @@ class QwenVisionParser:
         self.current_model_name = model_name
         self.model_path = init_qwen_paths(self.current_model_name)
         self.current_quantization = quantization
-        
-        # 添加CUDA可用性检查
-        if not torch.cuda.is_available():
-            raise RuntimeError(f"CUDA is required for  {model_name} model")
-
-        # 统一使用 BitsAndBytesConfig 配置量化参数
-        quant_config = None
-        # 检查模型是否已经量化
-        is_quantized_model = MODEL_REGISTRY.get(model_name, {}).get("quantized", False)
-        
-        if is_quantized_model:
-            print(f"模型 {model_name} 已经是量化模型，将忽略用户的量化设置")
-            # 对于已经量化的模型，使用原始精度加载
-            load_dtype = torch.float16
-        else:
-            # 对于非量化模型，应用用户选择的量化设置
-            if quantization == "👍 4-bit (VRAM-friendly)":
-                quant_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=torch.float16,
-                    bnb_4bit_quant_type="nf4",
-                    bnb_4bit_use_double_quant=True,
-                )
-                load_dtype = None  # 让量化配置决定数据类型
-            elif quantization == "⚖️ 8-bit (Balanced Precision)":
-                quant_config = BitsAndBytesConfig(
-                    load_in_8bit=True,
-                )
-                load_dtype = None  # 让量化配置决定数据类型
-            else:
-                # 不使用量化，使用原始精度
-                load_dtype = torch.float16
-
-        # 自定义device_map，这里假设只有一个GPU，将模型尽可能放到GPU上
-        device_map = {"": 0} if torch.cuda.device_count() > 0 else "auto"
 
         # 检查模型文件是否存在且完整
         if not validate_model_path(self.model_path, self.current_model_name):
             print(f"检测到模型文件缺失，正在为你下载 {model_name} 模型，请稍候...")
             print(f"下载将保存在: {self.model_path}")
             
-            # 开始下载逻辑（保持不变）
+            # 开始下载逻辑
             try:
                 # 从注册表获取模型信息
                 model_info = MODEL_REGISTRY[model_name]
                 
-                # 测试下载速度（保持不变）
+                # 测试下载速度
                 huggingface_test_url = f"https://huggingface.co/{model_info['repo_id']['huggingface']}/resolve/main/{model_info['test_file']}"
                 modelscope_test_url = f"https://modelscope.cn/api/v1/models/{model_info['repo_id']['modelscope']}/repo?Revision=master&FilePath={model_info['test_file']}"
                 huggingface_speed = test_download_speed(huggingface_test_url)
@@ -710,7 +509,7 @@ class QwenVisionParser:
                 print(f"Hugging Face下载速度: {huggingface_speed:.2f} KB/s")
                 print(f"ModelScope下载速度: {modelscope_speed:.2f} KB/s")
 
-                # 根据下载速度选择优先下载源（保持不变）
+                # 根据下载速度选择优先下载源
                 if huggingface_speed > modelscope_speed * 1.5:
                     download_sources = [
                         (snapshot_download, model_info['repo_id']['huggingface'], "Hugging Face"),
@@ -750,7 +549,7 @@ class QwenVisionParser:
 
                             used_cache_path = cached_path  # 记录使用的缓存路径
                             
-                            # 将下载的模型复制到模型目录（保持不变）
+                            # 将下载的模型复制到模型目录
                             self.copy_cached_model_to_local(cached_path, self.model_path)
                             
                             print(f"成功从 {source} 下载模型到 {self.model_path}")
@@ -768,7 +567,7 @@ class QwenVisionParser:
                 else:
                     raise RuntimeError("从所有源下载模型均失败。")
                 
-                # 下载完成后再次验证（保持不变）
+                # 下载完成后再次验证
                 if not validate_model_path(self.model_path, self.current_model_name):
                     raise RuntimeError(f"下载后模型文件仍不完整: {self.model_path}")
                 
@@ -777,7 +576,7 @@ class QwenVisionParser:
             except Exception as e:
                 print(f"下载模型时发生错误: {e}")
                 
-                # 下载失败提示（保持不变）
+                # 下载失败提示
                 if used_cache_path:
                     print("\n⚠️ 注意：下载过程中创建了缓存文件")
                     print(f"缓存路径: {used_cache_path}")
@@ -788,35 +587,84 @@ class QwenVisionParser:
         # 模型文件完整，正常加载
         print(f"加载模型: {self.model_path}，量化: {quantization}")
 
-        # 根据量化选项决定是否传递quantization_config
+        # 检查模型是否已经量化
+        is_quantized_model = MODEL_REGISTRY.get(model_name, {}).get("quantized", False)
+        
+        # 配置量化参数
+        if is_quantized_model:
+            print(f"模型 {model_name} 已经是量化模型，将忽略用户的量化设置")
+            # 对于已经量化的模型，使用原始精度加载
+            load_dtype = torch.float16
+            quant_config = None
+        else:
+            # 对于非量化模型，应用用户选择的量化设置
+            if quantization == "👍 4-bit (VRAM-friendly)":
+                quant_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True,
+                )
+                load_dtype = None  # 让量化配置决定数据类型
+            elif quantization == "⚖️ 8-bit (Balanced Precision)":
+                quant_config = BitsAndBytesConfig(
+                    load_in_8bit=True,
+                )
+                load_dtype = None  # 让量化配置决定数据类型
+            else:
+                # 不使用量化，使用原始精度
+                load_dtype = torch.float16
+                quant_config = None
+
+        # 配置device_map
+        if device == "cuda":
+            if torch.cuda.device_count() > 0:
+                device_map = {"": 0}  # 使用第一个GPU
+                print(f"使用GPU: {torch.cuda.get_device_name(0)}")
+            else:
+                device_map = "auto"
+                print("未检测到可用GPU，将尝试使用auto设备映射")
+        elif device == "mps":
+            device_map = "auto"  # MPS不支持device_map，加载后需手动移到设备
+        else:
+            device_map = "auto"  # CPU加载
+
+        # 准备加载参数
         load_kwargs = {
             "device_map": device_map,
-            "torch_dtype": torch.float16,
-            "attn_implementation": "flash_attention_2" if FLASH_ATTENTION_AVAILABLE else "sdpa",
+            "torch_dtype": load_dtype,
+            "attn_implementation": "flash_attention_2" if FLASH_ATTENTION_AVAILABLE and device == "cuda" else "sdpa",
             "low_cpu_mem_usage": True,
             "use_safetensors": True,
         }
 
+        # 如果有量化配置，添加到加载参数中
         if quant_config is not None:
             load_kwargs["quantization_config"] = quant_config
 
+        # 加载模型
         self.model = AutoModelForVision2Seq.from_pretrained(
             self.model_path,
             **load_kwargs
         ).eval()
 
-        # 编译优化（保持不变）
+        # 对于MPS，需要手动将模型移到设备
+        if device == "mps":
+            self.model = self.model.to("mps")
+
+        # 编译优化
         if torch.__version__ >= "2.2":
             self.model = torch.compile(self.model, mode="reduce-overhead")
 
-        # SDP优化（保持不变）
+        # SDP优化
         torch.backends.cuda.enable_flash_sdp(True)
         torch.backends.cuda.enable_mem_efficient_sdp(True)
 
+        # 加载处理器和分词器
         self.processor = AutoProcessor.from_pretrained(self.model_path, trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
 
-        # 修复rope_scaling配置警告（保持不变）
+        # 修复rope_scaling配置警告
         if hasattr(self.model.config, "rope_scaling"):
             self.model.config.rope_scaling["mrope_section"] = "none"  # 禁用 MROPE 优化
 
@@ -873,23 +721,50 @@ class QwenVisionParser:
             print(f"无法处理视频: {video_path}")
             return None, None, None
         
+        # 打印原始帧信息（用于调试）
+        if frames.numel() > 0:
+            print(f"原始帧: 形状={frames.shape}, 类型={frames.dtype}, 最小值={frames.min()}, 最大值={frames.max()}")
+        
         # 更激进的帧数量限制
-        max_frames = 15  # 从50减少到30
+        max_frames = 15
         if total_frames > max_frames:
             # 采样帧
             indices = np.linspace(0, total_frames - 1, max_frames, dtype=int)
             frames = frames[indices]
             print(f"视频帧数量从 {total_frames} 采样到 {len(frames)}")
         
-        # 更小的帧尺寸
-        resized_frames = []
+        # 确保帧数据是(C, H, W)格式，并且是float32类型(0.0-1.0)
+        processed_frames = []
         for frame in frames:
-            # 转换为PIL图像
-            frame_pil = Image.fromarray(frame.numpy())
-            # 调整大小为384x384 (原为512x512)
-            frame_pil.thumbnail((384, 384))
-            # 转回张量
-            frame_tensor = torch.from_numpy(np.array(frame_pil)).permute(2, 0, 1)
+            # 确保帧是(C, H, W)格式
+            if frame.dim() == 3 and frame.shape[0] not in [1, 3]:
+                # 如果第一个维度不是通道数(1或3)，可能是(H, W, C)格式
+                frame = frame.permute(2, 0, 1)
+            
+            # 确保帧是float32类型(0.0-1.0)
+            if frame.dtype != torch.float32:
+                frame = frame.float()
+            
+            if frame.max() > 1.0:
+                # 如果像素值范围不是0.0-1.0，进行归一化
+                frame = frame / 255.0
+            
+            processed_frames.append(frame)
+        
+        # 调整帧大小
+        resized_frames = []
+        for frame in processed_frames:
+            # 转换为PIL图像进行调整大小
+            # 先转换为(H, W, C)格式，再转换为numpy数组和uint8类型
+            frame_np = frame.permute(1, 2, 0).cpu().numpy()
+            frame_np = (frame_np * 255).clip(0, 255).astype(np.uint8)
+            frame_pil = Image.fromarray(frame_np)
+            
+            # 调整大小为384x384
+            frame_pil = frame_pil.resize((384, 384), Image.Resampling.LANCZOS)
+            
+            # 转回张量 (C, H, W) 格式，float32类型(0.0-1.0)
+            frame_tensor = torch.from_numpy(np.array(frame_pil)).permute(2, 0, 1).float() / 255.0
             resized_frames.append(frame_tensor)
         
         # 转换回张量
@@ -898,7 +773,9 @@ class QwenVisionParser:
         else:
             resized_frames = torch.zeros(0)
         
-        return resized_frames, fps, len(frames)  # 返回实际采样后的帧数
+        print(f"处理后帧: 形状={resized_frames.shape}, 类型={resized_frames.dtype}")
+        return resized_frames, fps, len(frames) # 返回实际采样后的帧数
+        
 
     @torch.no_grad()
     def process(self, model_name, quantization, prompt, max_tokens, temperature, top_p,
@@ -971,8 +848,8 @@ class QwenVisionParser:
             "padding": True,
         }
         
-        # 调用多模态处理逻辑（关键修正：解包两个值）
-        images, videos = process_vision_info(conversation)  # 改为解包两个值
+        # 调用多模态处理逻辑
+        images, videos = process_vision_info(conversation)
         processor_args["images"] = images
         processor_args["videos"] = videos
         
@@ -980,28 +857,18 @@ class QwenVisionParser:
         del video_frames, images, videos
         torch.cuda.empty_cache()
         
-        
-        # 在函数开始处初始化model_inputs为None
-        model_inputs = None
-        
         # 将输入移至设备
-        try:
-            inputs = self.processor(**processor_args).to(self.model.device)
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-            model_inputs = {
-                k: v.to(self.device)
-                for k, v in inputs.items()
-                if v is not None
-            }
-            
-            # 确保model_inputs包含所需的键
-            if "input_ids" not in model_inputs:
-                raise ValueError("处理后的输入不包含'input_ids'键")
-            
-        except Exception as e:
-            print(f"处理输入时发生错误: {e}")
-            # 这里可以添加更多的错误处理逻辑，例如返回默认值或抛出特定异常
-            raise RuntimeError("无法处理模型输入") from e
+        inputs = self.processor(**processor_args)
+        device = self.default_device
+        model_inputs = {
+            k: v.to(device)
+            for k, v in inputs.items()
+            if v is not None
+        }
+        
+        # 确保model_inputs包含所需的键
+        if "input_ids" not in model_inputs:
+            raise ValueError("处理后的输入不包含'input_ids'键")
         
         # 生成配置
         generate_config = {
@@ -1020,14 +887,15 @@ class QwenVisionParser:
             pre_forward_memory = torch.cuda.memory_allocated() / 1024**2
             print(f"生成前GPU内存使用: {pre_forward_memory:.2f} MB")
         
-        # 检查model_inputs是否已正确初始化
-        if model_inputs is None:
-            raise RuntimeError("模型输入未正确初始化")
-
-        # 使用新的autocast API
-        with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
-            outputs = self.model.generate(**model_inputs, **generate_config)
-
+        # 使用适当的设备进行生成
+        with torch.no_grad():
+            # 使用新的autocast API
+            if device == "cuda":
+                with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
+                    outputs = self.model.generate(**model_inputs, **generate_config)
+            else:
+                outputs = self.model.generate(**model_inputs, **generate_config)
+        
         # 记录GPU内存使用情况
         if torch.cuda.is_available():
             post_forward_memory = torch.cuda.memory_allocated() / 1024**2
