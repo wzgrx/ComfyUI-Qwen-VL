@@ -745,10 +745,10 @@ class QwenVisionParser:
         self.processor = AutoProcessor.from_pretrained(self.model_path, trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
 
-        # 修复rope_scaling配置警告
-        # Fix rope_scaling configuration warning
-        if hasattr(self.model.config, "rope_scaling"):
-            self.model.config.rope_scaling["mrope_section"] = "none"  # 禁用 MROPE 优化 | Disable MROPE optimization
+        # # 修复rope_scaling配置警告
+        # # Fix rope_scaling configuration warning
+        # if hasattr(self.model.config, "rope_scaling"):
+        #     self.model.config.rope_scaling["mrope_section"] = 0  # 禁用 MROPE 优化 | Disable MROPE optimization
 
     def copy_cached_model_to_local(self, cached_path, target_path):
         """将缓存的模型文件复制到目标路径"""
